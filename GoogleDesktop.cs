@@ -6,7 +6,6 @@ using UnityEngine;
 using System.IO;
 using System.Linq;
 using System.Net.Sockets;
-using System.Runtime.InteropServices;
 using System.Text;
 using System.Security.Cryptography;
 using System.Threading.Tasks;
@@ -16,6 +15,7 @@ using Newtonsoft.Json;
     Authenticators: https://mirror-networking.com/docs/Components/Authenticators/
     Documentation: https://mirror-networking.com/docs/Guides/Authentication.html
     API Reference: https://mirror-networking.com/docs/api/Mirror.NetworkAuthenticator.html
+    Special Thanks: https://github.com/googlesamples/oauth-apps-for-windows
 */
 
 namespace Core.Authentication
@@ -49,16 +49,6 @@ namespace Core.Authentication
             Failed = 401
         }
 
-        #region Windows DLL Imports
-        #if UNITY_STANDALONE_WIN
-        // If we're targeting windows, then we'd like to import the following methods from user32.dll in order to manipulate the
-        // user's window back to the application after login in. This is more for convenience than for anything else.
-        [DllImport("user32.dll")] static extern IntPtr GetActiveWindow();
-        [DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr hWnd); 
-        [DllImport("user32.dll", SetLastError=true)] public static extern IntPtr SetActiveWindow(IntPtr hWnd);
-        #endif
-        #endregion
-        
         #region Messages
         /// <summary>
         /// The authentication request message that gets sent from the client to the server. We send the user's information
@@ -185,226 +175,7 @@ namespace Core.Authentication
 #endif
         }
         
-        #endregion
-
-        #region Client
-
-        /// <summary>
-        /// Called on client from StartClient to initialize the Authenticator
-        /// <para>Client message handlers should be registered in this method.</para>
-        /// </summary>
-        public override void OnStartClient()
-        {
-            // register a handler for the authentication response we expect from server
-            NetworkClient.RegisterHandler<AuthResponseMessage>(OnAuthResponseMessage, false);
-        }
-
-        /// <summary>
-        /// Called on client from OnClientAuthenticateInternal when a client needs to authenticate
-        /// </summary>
-        /// <param name="conn">Connection of the client.</param>
-        public override void OnClientAuthenticate(NetworkConnection conn)
-        {
-            SendAuthRequestMessage(conn);
-        }
-        
-
-        /// <summary>
-        /// Called on client when the server's AuthResponseMessage arrives
-        /// </summary>
-        /// <param name="conn">Connection to client.</param>
-        /// <param name="msg">The message payload</param>
-        public void OnAuthResponseMessage(AuthResponseMessage msg)
-        {
-            Debug.Log($"[Authentication][ServerToClient] Authentication Status: {msg.responseCode.ToString()}\n" +
-                      $"{msg.message}");
-
-            if (msg.responseCode == AuthenticationResponseCode.Success)
-            {
-                ClientAccept(NetworkClient.connection);
-            }
-
-            if (msg.responseCode == AuthenticationResponseCode.Failed)
-            {
-                ClientReject(NetworkClient.connection);
-                Debug.LogError(msg.message);
-            }
-
-        }
-
-        
-        /// <summary>
-        /// A Task containing the OAuth Authentication Logic
-        /// </summary>
-        /// <param name="conn"></param>
-        /// <returns></returns>
-        public async Task<AuthenticationResponseCode> SendAuthRequestMessage(NetworkConnection conn)
-        {
-            // Configures all of the variables required for authentication based on the selected authentication provider.
-            InitializeAuthenticationProvider();
-
-            var code = "";
-            
-            #region Windows Authorization
-            #if UNITY_STANDALONE_WIN
-            // Get an authorization code using an authentication flow that supports Windows.
-            code = await GetAuthorizationCodeWindows();
-            #endif
-            #endregion
-
-            // Notify the user that their authentication code was successfully retrieved from the authentication provider.
-            Debug.Log("[Authentication][Client] Successfully received authentication code from the authentication provider.");
-            Debug.Log("[Authentication][ClientToServer] Sending authentication request to game server.");
-            
-            // Send the Authentication Request message to the server, providing the encrypted authentication key, and 
-            // the authentication provider of the key.
-            AuthRequestMessage authRequestMessage = new AuthRequestMessage(code, provider);
-            NetworkClient.Send(authRequestMessage);
-            
-            return AuthenticationResponseCode.ValidCode;
-        }
-        
-
-        #region Authorization Code - Windows
-        #if UNITY_STANDALONE_WIN
-        /// <summary>
-        /// Gets an OAuth Authorization Code for the using a flow that is compatible with Windows. 
-        /// </summary>
-        /// <returns> An OAuth authorization code. </returns>
-        private async Task<string> GetAuthorizationCodeWindows()
-        {
-            switch (provider)
-            {
-                case "Google":
-                    // Start an HTTP listener server, that we use to listen for the user's authentication response.
-                    var http = StartHttpListener();
-
-                    // Creates the OAuth 2.0 authorization request based on our selected OAuth provider.
-                    var authorizationRequest = CreateAuthorizationRequest();
-
-                    // Get a reference to the unity window so we can redirect the player back to the game after we get the
-                    // player's oAuth response.
-                    var unityWindow = GetActiveWindow();
-            
-                    // Opens request in the browser a.
-                    Application.OpenURL(authorizationRequest);
-            
-                    // Await the user's login, and pause this thread until we have the authentication context.
-                    var context = await http.GetContextAsync();
-
-                    // Sends an HTTP response to the browser.
-                    var response = context.Response;
-            
-                    // Load an HTML response page for the user to notify them to switch back to the application if they haven't
-                    // automatically been switched.
-                    GenerateResponsePage(response, http);
-
-                    // Checks the user's authentication response for any errors.
-                    if (context.Request.QueryString.Get("error") != null)
-                    {
-                        Debug.LogError($"[Authentication][Client] OAuth authorization error: {context.Request.QueryString.Get("error")}.");
-                        return $"FAILED_AUTHORIZATION_ERROR ({context.Request.QueryString.Get("error")}";
-                    }
-            
-                    if (context.Request.QueryString.Get("code") == null
-                        || context.Request.QueryString.Get("state") == null)
-                    {
-                        Debug.LogError("[Authentication][Client] [Authentication][Client] Malformed authorization response. " + context.Request.QueryString);
-                        return "FAILED_MALFORMED_AUTHORIZATION_RESPONSE";
-                    }
-
-
-                    // Attempt to set the user's game window as the main window.
-                    SetForegroundWindow(unityWindow);
-                    SetActiveWindow(unityWindow);
-
-                    // Extract the code from the authentication response.
-                    var code = context.Request.QueryString.Get("code");
-                    var incomingState = context.Request.QueryString.Get("state");
-
-                    // Compares the received state to the expected value, to ensure that
-                    // this app made the request which resulted in authorization.
-                    if (incomingState != _state)
-                    {
-                        Debug.LogError($"[Authentication][Client] Received request with invalid state ({incomingState})");
-                        return "FAILED_INVALID_STATE";
-                    }
-
-                    return code;
-                    
-                default:
-                    return "FAILED_INVALID_AUTHENTICATION_PROVIDER";
-            }
-        }
-        #endif
-        #endregion
-        
-
-        private static void GenerateResponsePage(HttpListenerResponse response, HttpListener http)
-        {
-            string responseString = $"<html>" +
-                                    $"<head>" +
-                                    $"<meta http-equiv='refresh' content='10;url=https://google.com'>" +
-                                    $"</head>" +
-                                    $"<body>Authentication complete, please return to the game.</body>" +
-                                    $"</html>";
-
-            var buffer = System.Text.Encoding.UTF8.GetBytes(responseString);
-            response.ContentLength64 = buffer.Length;
-            var responseOutput = response.OutputStream;
-            Task responseTask = responseOutput.WriteAsync(buffer, 0, buffer.Length).ContinueWith((task) =>
-            {
-                responseOutput.Close();
-                http.Stop();
-                Debug.Log("[Authentication][Client] HTTP listen server stopped successfully.");
-            });
-        }
-
-        private string CreateAuthorizationRequest()
-        {
-            string authorizationRequest = "";
-
-            if (provider == "Google")
-                authorizationRequest = $"{_authorizationEndpoint}?" +
-                                       $"response_type=code&" +
-                                       $"scope={_scope}&" +
-                                       $"redirect_uri={_redirectUri}&" +
-                                       $"client_id={_appId}&" +
-                                       $"state={_state}&" +
-                                       $"code_challenge={_codeChallenge}&" +
-                                       $"code_challenge_method={_codeChallengeMethod}";
-            return authorizationRequest;
-        }
-
-        private HttpListener StartHttpListener()
-        {
-            // Creates a redirect uri using the loopback adapter and an unused port.
-            _redirectUri = $"http://localhost:{GetRandomUnusedPort()}/";
-
-            // Creates an HttpListener to listen for our authentication response redirect.
-            var http = new HttpListener();
-            http.Prefixes.Add(_redirectUri);
-            http.Start();
-            Debug.Log("[Authentication][Client] Successfully started listening for authentication loopback using HTTPListener.");
-            return http;
-        }
-
-        private void InitializeAuthenticationProvider()
-        {
-            if (provider == "Google")
-            {
-                _appId = webAppId;
-                _authorizationEndpoint = authorizationEndpoint;
-                _state = GetRandomDataBase64URL(32);
-                _codeVerifier = GetRandomDataBase64URL(32);
-                _codeChallenge = GetBase64URLEncodeWithoutPadding(EncryptSha256(_codeVerifier));
-                _codeChallengeMethod = "S256";
-                _clientSecret = clientSecret;
-                _scope = googleScopes.Aggregate(_scope, (current, googleScope) => current + (googleScope + "%20"));
-            }
-        }
-
-        /// <summary>
+                /// <summary>
         /// Exchanges the authentication code for an authentication token which can be used to retrieve the user's data
         /// from the identity provider.
         /// </summary>
@@ -520,6 +291,210 @@ namespace Core.Authentication
             return "FAILED{\"error\": \"invalid_authority\",\"error_description\": \"Client provided authentication using an invalid authority.\"}";
         }
         
+        #endregion
+
+        #region Client
+
+        /// <summary>
+        /// Called on client from StartClient to initialize the Authenticator
+        /// <para>Client message handlers should be registered in this method.</para>
+        /// </summary>
+        public override void OnStartClient()
+        {
+            // register a handler for the authentication response we expect from server
+            NetworkClient.RegisterHandler<AuthResponseMessage>(OnAuthResponseMessage, false);
+        }
+
+        /// <summary>
+        /// Called on client from OnClientAuthenticateInternal when a client needs to authenticate
+        /// </summary>
+        /// <param name="conn">Connection of the client.</param>
+        public override void OnClientAuthenticate(NetworkConnection conn)
+        {
+            SendAuthRequestMessage(conn);
+        }
+        
+
+        /// <summary>
+        /// Called on client when the server's AuthResponseMessage arrives
+        /// </summary>
+        /// <param name="conn">Connection to client.</param>
+        /// <param name="msg">The message payload</param>
+        public void OnAuthResponseMessage(AuthResponseMessage msg)
+        {
+            Debug.Log($"[Authentication][ServerToClient] Authentication Status: {msg.responseCode.ToString()}\n" +
+                      $"{msg.message}");
+
+            if (msg.responseCode == AuthenticationResponseCode.Success)
+            {
+                ClientAccept(NetworkClient.connection);
+            }
+
+            if (msg.responseCode == AuthenticationResponseCode.Failed)
+            {
+                ClientReject(NetworkClient.connection);
+                Debug.LogError(msg.message);
+            }
+
+        }
+
+        
+        /// <summary>
+        /// A Task containing the OAuth Authentication Logic
+        /// </summary>
+        /// <param name="conn"></param>
+        /// <returns></returns>
+        public async Task<AuthenticationResponseCode> SendAuthRequestMessage(NetworkConnection conn)
+        {
+            // Configures all of the variables required for authentication based on the selected authentication provider.
+            InitializeAuthenticationProvider();
+
+            var code = "";
+            
+            #region Windows Authorization
+            #if UNITY_STANDALONE_WIN
+            // Get an authorization code using an authentication flow that supports Windows.
+            code = await GetAuthorizationCodeWindows();
+            #endif
+            #endregion
+
+            // Notify the user that their authentication code was successfully retrieved from the authentication provider.
+            Debug.Log("[Authentication][Client] Successfully received authentication code from the authentication provider.");
+            Debug.Log("[Authentication][ClientToServer] Sending authentication request to game server.");
+            
+            // Send the Authentication Request message to the server, providing the encrypted authentication key, and 
+            // the authentication provider of the key.
+            AuthRequestMessage authRequestMessage = new AuthRequestMessage(code, provider);
+            NetworkClient.Send(authRequestMessage);
+            
+            return AuthenticationResponseCode.ValidCode;
+        }
+        
+        /// <summary>
+        /// Gets an OAuth Authorization Code for the using a flow that is compatible with Windows. 
+        /// </summary>
+        /// <returns> An OAuth authorization code. </returns>
+        private async Task<string> GetAuthorizationCodeWindows()
+        {
+            switch (provider)
+            {
+                case "Google":
+                    // Start an HTTP listener server, that we use to listen for the user's authentication response.
+                    var http = StartHttpListener();
+
+                    // Creates the OAuth 2.0 authorization request based on our selected OAuth provider.
+                    var authorizationRequest = CreateAuthorizationRequest();
+
+                    // Opens request in the browser.
+                    Application.OpenURL(authorizationRequest);
+            
+                    // Await the user's login, and pause this thread until we have the authentication context.
+                    var context = await http.GetContextAsync();
+
+                    // Sends an HTTP response to the browser.
+                    var response = context.Response;
+            
+                    // Load an HTML response page for the user to notify them to switch back to the application if they haven't
+                    // automatically been switched.
+                    GenerateResponsePage(response, http);
+
+                    // Checks the user's authentication response for any errors.
+                    if (context.Request.QueryString.Get("error") != null)
+                    {
+                        Debug.LogError($"[Authentication][Client] OAuth authorization error: {context.Request.QueryString.Get("error")}.");
+                        return $"FAILED_AUTHORIZATION_ERROR ({context.Request.QueryString.Get("error")}";
+                    }
+            
+                    if (context.Request.QueryString.Get("code") == null
+                        || context.Request.QueryString.Get("state") == null)
+                    {
+                        Debug.LogError("[Authentication][Client] [Authentication][Client] Malformed authorization response. " + context.Request.QueryString);
+                        return "FAILED_MALFORMED_AUTHORIZATION_RESPONSE";
+                    }
+
+                    // Extract the code from the authentication response.
+                    var code = context.Request.QueryString.Get("code");
+                    var incomingState = context.Request.QueryString.Get("state");
+
+                    // Compares the received state to the expected value, to ensure that
+                    // this app made the request which resulted in authorization.
+                    if (incomingState != _state)
+                    {
+                        Debug.LogError($"[Authentication][Client] Received request with invalid state ({incomingState})");
+                        return "FAILED_INVALID_STATE";
+                    }
+
+                    return code;
+                    
+                default:
+                    return "FAILED_INVALID_AUTHENTICATION_PROVIDER";
+            }
+        }
+
+        private static void GenerateResponsePage(HttpListenerResponse response, HttpListener http)
+        {
+            string responseString = $"<html>" +
+                                    $"<head>" +
+                                    $"<meta http-equiv='refresh' content='10;url=https://google.com'>" +
+                                    $"</head>" +
+                                    $"<body>Authentication complete, please return to the game.</body>" +
+                                    $"</html>";
+
+            var buffer = System.Text.Encoding.UTF8.GetBytes(responseString);
+            response.ContentLength64 = buffer.Length;
+            var responseOutput = response.OutputStream;
+            Task responseTask = responseOutput.WriteAsync(buffer, 0, buffer.Length).ContinueWith((task) =>
+            {
+                responseOutput.Close();
+                http.Stop();
+                Debug.Log("[Authentication][Client] HTTP listen server stopped successfully.");
+            });
+        }
+
+        private string CreateAuthorizationRequest()
+        {
+            string authorizationRequest = "";
+
+            if (provider == "Google")
+                authorizationRequest = $"{_authorizationEndpoint}?" +
+                                       $"response_type=code&" +
+                                       $"scope={_scope}&" +
+                                       $"redirect_uri={_redirectUri}&" +
+                                       $"client_id={_appId}&" +
+                                       $"state={_state}&" +
+                                       $"code_challenge={_codeChallenge}&" +
+                                       $"code_challenge_method={_codeChallengeMethod}";
+            return authorizationRequest;
+        }
+
+        private HttpListener StartHttpListener()
+        {
+            // Creates a redirect uri using the loopback adapter and an unused port.
+            _redirectUri = $"http://localhost:{GetRandomUnusedPort()}/";
+
+            // Creates an HttpListener to listen for our authentication response redirect.
+            var http = new HttpListener();
+            http.Prefixes.Add(_redirectUri);
+            http.Start();
+            Debug.Log("[Authentication][Client] Successfully started listening for authentication loopback using HTTPListener.");
+            return http;
+        }
+
+        private void InitializeAuthenticationProvider()
+        {
+            if (provider == "Google")
+            {
+                _appId = webAppId;
+                _authorizationEndpoint = authorizationEndpoint;
+                _state = GetRandomDataBase64URL(32);
+                _codeVerifier = GetRandomDataBase64URL(32);
+                _codeChallenge = GetBase64URLEncodeWithoutPadding(EncryptSha256(_codeVerifier));
+                _codeChallengeMethod = "S256";
+                _clientSecret = clientSecret;
+                _scope = googleScopes.Aggregate(_scope, (current, googleScope) => current + (googleScope + "%20"));
+            }
+        }
+        
         /// <summary>
         /// Returns URI-safe data with a given input length.
         /// </summary>
@@ -536,7 +511,6 @@ namespace Core.Authentication
         
         /// <summary>
         /// TcpListener will find a random un-used port to listen on if you bind to port 0.
-        /// Special thanks to http://stackoverflow.com/a/3978040
         /// </summary>
         /// <returns> Returns a random unused port.</returns>
         private static int GetRandomUnusedPort()
@@ -577,8 +551,6 @@ namespace Core.Authentication
             SHA256Managed sha256 = new SHA256Managed();
             return sha256.ComputeHash(bytes);
         }
-
-
         #endregion
     }
 }
