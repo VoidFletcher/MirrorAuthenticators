@@ -16,3 +16,5 @@ This repository is updated to match the following versions:
 **Unity 2020.3.31f1**  
 **Mirror v65**
 
+## IMPORTANT - Book Readers
+Google now requires HTTPS for your scope definitions, please add https://www.google...etc for your scope definitions or you will get an error back from the API.
