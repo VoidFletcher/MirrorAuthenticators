@@ -1,16 +1,18 @@
 # MirrorAuthenticators
-A repository containing authenticators for Mirror Networking, provided along with my book on creating multiplayer games in Unity using Mirror. 
+A repository containing authenticators for Mirror Networking, provided along with my book on Creating Multiplayer Games in Unity Using Mirror Networking. 
 This repository will continue to grow as I build additional authenticators for Mirror Networking.  
 
 Currently, the repository supports the following authenticator(s):
-- Google Desktop Authenticator  
-  
+- Windows Google Authenticator  
+
+## IMPORTANT
+As of somewhere in Unity 2020.3.x, Unity has included their own newtonsoft dll. Ensure that you are on the correct version by completing the following steps:
+1) Remove the Unity **Version Control** package, as this has a dependency to an old version of newtonsoft, this might get fixed in future.
+2) Install the latest Unity version of newtonsoft by adding the following package via github url: **com.unity.nuget.newtonsoft-json**
+
 ## Dependencies
+This repository is updated to match the following versions:
 
-**Google Desktop Authenticator:**  
-*Dependencies:*
-- https://github.com/jilleJr/Newtonsoft.Json-for-Unity
+**Unity 2020.3.31f1**  
+**Mirror v65**
 
-**Dependency Downloads:**  
-*NewtonSoft.Json For Unity:*
-- https://package-installer.glitch.me/v1/installer/jilleJr/jillejr.newtonsoft.json-for-unity?registry=https%3A%2F%2Fnpm.cloudsmith.io%2Fjillejr%2Fnewtonsoft-json-for-unity
