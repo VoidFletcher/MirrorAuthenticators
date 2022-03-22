@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Net;
 using Mirror;
@@ -100,14 +100,14 @@ namespace Core.Authentication
         /// Called on server from OnServerAuthenticateInternal when a client needs to authenticate
         /// </summary>
         /// <param name="conn">Connection to client.</param>
-        public override void OnServerAuthenticate(NetworkConnection conn) { }
+        public override void OnServerAuthenticate(NetworkConnectionToClient conn) { }
 
         /// <summary>
         /// Called on server when the client's AuthRequestMessage arrives
         /// </summary>
         /// <param name="conn">Connection to client.</param>
         /// <param name="msg">The message payload</param>
-        public async void OnAuthRequestMessage(NetworkConnection conn, AuthRequestMessage msg)
+        public async void OnAuthRequestMessage(NetworkConnectionToClient conn, AuthRequestMessage msg)
         {
 #if UNITY_STANDALONE_WIN
             Debug.Log($"[Authentication][Server] Server received authentication request from {conn.address} " +
@@ -138,16 +138,22 @@ namespace Core.Authentication
                         return;
                     }
 
+                    // You can read the data here.
                     if (values != null)
+                    {
                         foreach (var value in values)
                         {
                             Debug.Log($"{value}");
                         }
-
+                    }
+                    
                     AuthResponseMessage authResponseMessage = new AuthResponseMessage(AuthenticationResponseCode.Success, message);
                     conn.Send(authResponseMessage);
 
-                    conn.authenticationData = UUID;
+                    // You can read the data here, or store it in the authentication data for the user for later use
+                    // within the session.
+                    conn.authenticationData = values;
+                    
                     ServerAccept(conn);
                 }
 
@@ -309,9 +315,9 @@ namespace Core.Authentication
         /// Called on client from OnClientAuthenticateInternal when a client needs to authenticate
         /// </summary>
         /// <param name="conn">Connection of the client.</param>
-        public override void OnClientAuthenticate(NetworkConnection conn)
+        public override void OnClientAuthenticate()
         {
-            SendAuthRequestMessage(conn);
+            SendAuthRequestMessage();
         }
         
 
@@ -327,12 +333,12 @@ namespace Core.Authentication
 
             if (msg.responseCode == AuthenticationResponseCode.Success)
             {
-                ClientAccept(NetworkClient.connection);
+                ClientAccept();
             }
 
             if (msg.responseCode == AuthenticationResponseCode.Failed)
             {
-                ClientReject(NetworkClient.connection);
+                ClientReject();
                 Debug.LogError(msg.message);
             }
 
@@ -344,7 +350,7 @@ namespace Core.Authentication
         /// </summary>
         /// <param name="conn"></param>
         /// <returns></returns>
-        public async Task<AuthenticationResponseCode> SendAuthRequestMessage(NetworkConnection conn)
+        public async Task<AuthenticationResponseCode> SendAuthRequestMessage()
         {
             // Configures all of the variables required for authentication based on the selected authentication provider.
             InitializeAuthenticationProvider();
